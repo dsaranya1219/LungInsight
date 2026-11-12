@@ -1,0 +1,15 @@
+torch
+torchvision
+numpy
+pandas
+scikit-learn
+pylidc
+gradnorm-pytorch
+grad-cam
+h5py
+transformers
+huggingface_hub
+shap
+jsonschema
+fastapi
+uvicorn

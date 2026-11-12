@@ -1,0 +1,931 @@
+{
+  "description": "LungInsight v2 preprocessing metadata format",
+  "array_axes": [
+    "z",
+    "y",
+    "x"
+  ],
+  "coordinate_system": "DICOM_LPS",
+  "coordinate_format": {
+    "index_origin": [
+      0,
+      0,
+      0
+    ],
+    "origin_definition": "origin_mm is the physical DICOM-LPS coordinate in mm of the CENTER of saved voxel [0,0,0].",
+    "index_to_physical_formula": "p_LPS_mm = origin_mm + direction_lps @ ([z,y,x] * spacing_zyx_mm)",
+    "units": "mm",
+    "final_volume_reference": "The origin_mm value in meta.json refers to the CENTER of saved voxel [0,0,0] of the final volume (volume_hu_cropped.npy and aligned masks).",
+    "direction_lps_columns": {
+      "z": "direction_lps[:,0]",
+      "y": "direction_lps[:,1]",
+      "x": "direction_lps[:,2]"
+    },
+    "array_axes": [
+      "z",
+      "y",
+      "x"
+    ],
+    "index_order": "[z,y,x]",
+    "coordinate_system": "DICOM_LPS",
+    "origin_mm_definition": "origin_mm is the physical DICOM-LPS coordinate [LPS x, LPS y, LPS z] of the CENTER of saved CT voxel [0,0,0] in volume_hu_cropped.npy.",
+    "coordinate_vector_semantics": {
+      "voxel_index": "[z,y,x]",
+      "spacing": "spacing_zyx_mm = [z_spacing, y_spacing, x_spacing]",
+      "physical_vector": "[LPS x, LPS y, LPS z] in millimetres",
+      "direction_matrix": "Columns of direction_lps give the physical LPS direction of the array Z, Y, X axes respectively. The matrix must be orthonormal; either determinant sign is valid because array-axis and physical-coordinate ordering differ."
+    },
+    "ct_frame_space": "stage01_final_cropped_ct",
+    "ct_origin_reference": "This is the cropped Stage 01 CT frame. A Z-crop changes origin_mm while preserving voxel spacing and direction_lps; no resampling is performed by Stage 01.",
+    "anatomical_coordinate_note": "Anatomical localization is attached to detector candidates and patches; it does not change the voxel or DICOM-LPS coordinate frame."
+  },
+  "outputs": {
+    "volume_hu.npy": "float32, complete HU volume before Z-cropping",
+    "volume_hu_cropped.npy": "float32, final Z-cropped HU result volume",
+    "volume_hu_masked.npy": "float32, final Z-cropped volume with voxels outside lung_mask blanked to the configured physical-air HU",
+    "volume_windowed.npy": "uint8, final Z-cropped 3-channel volume [lung window, soft-tissue window, bone window]",
+    "lung_mask.npy": "bool, final lung region mask",
+    "air_mask.npy": "bool, final physical-air mask",
+    "heart_mask.npy": "bool, ZYX conservative central cardiac/mediastinal exclusion mask, aligned to volume_hu_cropped.npy and constrained to voxels outside lung_mask",
+    "meta.json": "per-patient metadata conforming to this coordinate convention",
+    "anatomical_location": "Heuristic anatomical localization attached to each detector candidate and extracted patch; not a new segmentation mask.",
+    "03_nodule_classification": "Stage 03 per-patch nodule attribute predictions, attention weights, and provenance.",
+    "heart_tracking_diagnostics.json": "JSON report describing expanding 3D central-rod heart/mediastinal tracking, selected radius, Z span and failure reason.",
+    "heart_mask_review_attestation.json": "Optional JSON operator attestation after visual review of the new Stage 01 central-rod mask QC montage; not an automated clinical validation.",
+    "volume_hu_heart_excluded.npy": "float32, final Z-cropped HU volume with heart/central-mediastinal exclusion-mask voxels replaced by configured physical-air HU; same ZYX geometry as volume_hu_cropped.npy"
+  },
+  "schema_version": "2.15",
+  "imaging_clinical_contract": {
+    "version": "2.0.0",
+    "schema": "backend/Imaging/schemas/imaging_clinical_contract_v2.schema.json",
+    "filename": "imaging_clinical_contract_v2.json",
+    "clinical_api_validation": "backend/Clinical/imaging.py",
+    "count_policy": "Study-level counts are derived from persisted Stage 02 raw/fused/rejected records and Stage 04 prediction records. Missing artifacts produce null counts or explicit errors, never zero risk or successful stage states.",
+    "eligible_nodule_policy": "Only Stage 02 lung-mask-gated candidates joined through Stage 03/04/06 are emitted as nodule records.",
+    "clinical_form_source_inventory": {
+      "MSK_CHORD": [
+        "CURRENT_AGE_DEID",
+        "GENDER",
+        "RACE",
+        "ETHNICITY"
+      ],
+      "TCGA_LUAD_LUSC": [
+        "age",
+        "sex",
+        "race",
+        "ethnicity",
+        "smoking history where actually reported"
+      ],
+      "not_direct_observations": [
+        "SMOKING_PREDICTIONS_3_CLASSES is excluded as an observed smoking history predictor"
+      ]
+    },
+    "unknown_value_semantics": "Unknown, not_reported, reported-present, and reported-absent values are represented separately; absent properties are not interpreted as negative findings."
+  },
+  "stage_02_detect_and_patch": {
+    "stage": "02",
+    "space": "stage01_final_cropped_ct",
+    "patch_space": "patch_local_ct",
+    "input_volume": {
+      "dtype": "float32",
+      "array_axes": [
+        "z",
+        "y",
+        "x"
+      ],
+      "description": "Final Z-cropped, unmasked HU volume used for detection and patch extraction.",
+      "filename_key": "volume_hu_cropped.npy"
+    },
+    "authoritative_detector": {
+      "name": "ViTDet3D",
+      "sources": [
+        "ViTDet3D"
+      ],
+      "authority_policy": "ViTDet3D_sole_detector_with_lung_inclusion_and_heart_exclusion",
+      "fusion_method": "configured_physical_center_distance_or_3d_bbox_iou",
+      "checkpoint_default": "rlsn/DeTr4LungNodule",
+      "input_window_zyx_voxels": [
+        40,
+        128,
+        128
+      ],
+      "sliding_stride_zyx_voxels": [
+        30,
+        96,
+        96
+      ],
+      "normalization": {
+        "mean": -775.657161489884,
+        "std": 962.3208802005623,
+        "note": "These normalization constants are specific to the pretrained ViTDet3D detector."
+      },
+      "candidate_center_authority": "ViTDet3D retains its own post-NMS proposal geometry; overlapping ViTDet3D proposals that satisfy the fusion rule are merged by cluster mean. Single proposals retain their own geometry.",
+      "required_candidate_fields": [
+        "candidate_id",
+        "source",
+        "coordinate_order",
+        "center_zyx",
+        "bbox_start_zyx",
+        "bbox_end_zyx",
+        "spacing_zyx_mm",
+        "space",
+        "center_lps_mm",
+        "stable_nodule_id",
+        "detector_provenance",
+        "provenance_records"
+      ],
+      "candidate_physical_coordinate": {
+        "field": "center_lps_mm",
+        "definition": "DICOM-LPS [x,y,z] millimetre coordinate of center_zyx mapped through origin_mm, spacing_zyx_mm, and direction_lps.",
+        "formula": "center_lps_mm = origin_mm + direction_lps @ (center_zyx * spacing_zyx_mm)"
+      },
+      "candidate_anatomical_location_field": "anatomical_location",
+      "model_version_default": "v1.0"
+    },
+    "patch_outputs": {
+      "root": "02_detect_and_patch/patches/",
+      "array_directory": "02_detect_and_patch/patches/arrays/",
+      "visualization_directory": "02_detect_and_patch/patches/visualizations/",
+      "manifest": "02_detect_and_patch/patches/patches_manifest.json",
+      "array_dtype": "float32",
+      "array_axes": [
+        "z",
+        "y",
+        "x"
+      ],
+      "patch_space": "patch_local_ct"
+    },
+    "patch_coordinate_conventions": {
+      "patch_origin_definition": "patch_origin_lps_mm is the physical DICOM-LPS [x,y,z] coordinate of the CENTER of saved patch voxel [0,0,0]. It is computed from the source CT origin and crop_start_zyx, so it remains valid even when the requested crop extends outside the native CT and is filled with virtual air padding.",
+      "patch_spacing_definition": "patch_spacing_zyx_mm equals the source CT spacing_zyx_mm because patches are cropped without resampling.",
+      "index_to_physical_formula": "p_LPS_mm = patch_origin_lps_mm + direction_lps @ ([z,y,x] * patch_spacing_zyx_mm)",
+      "patch_center_definition": "patch_center_local_zyx is the nearest integer voxel location of the authoritative detector center inside the saved patch.",
+      "crop_bounds": {
+        "coordinate_frame": "stage01_final_cropped_ct",
+        "order": [
+          "z",
+          "y",
+          "x"
+        ],
+        "start_semantics": "inclusive",
+        "end_semantics": "exclusive",
+        "out_of_volume_behavior": "Virtual air padding using the HU value resolved through patch_padding_hu_ref."
+      },
+      "bbox_local_mapping": "bbox_local_start_zyx = bbox_start_zyx - crop_start_zyx and bbox_local_end_zyx = bbox_end_zyx - crop_start_zyx, clipped to the saved patch bounds for visualization/statistics."
+    },
+    "patch_record_fields": {
+      "patch_id": "Sequential patch identifier assigned during extraction.",
+      "candidate_id": "Stable identity of an accepted fused detector candidate.",
+      "space": "patch_local_ct",
+      "source_space": "stage01_final_cropped_ct",
+      "center_zyx": "Equal-weight fused detector center, or the sole source center, in source CT voxel coordinates.",
+      "center_lps_mm": "Same center expressed in DICOM-LPS millimetres.",
+      "crop_start_zyx": "Source CT crop start, inclusive.",
+      "crop_end_zyx": "Source CT crop end, exclusive.",
+      "source_clip_start_zyx": "Portion of crop intersecting the source CT.",
+      "source_clip_end_zyx": "Portion of crop intersecting the source CT, exclusive.",
+      "patch_center_local_zyx": "Nearest integer voxel to the detector center within patch coordinates.",
+      "patch_size_vox_zyx": "Saved patch shape in ZYX voxels.",
+      "spacing_zyx_mm": "Native CT spacing inherited by the patch.",
+      "origin_lps_mm": "Source CT [0,0,0] voxel-center physical coordinate.",
+      "patch_origin_lps_mm": "Patch [0,0,0] voxel-center physical coordinate.",
+      "patch_center_lps_mm": "Physical coordinate of patch_center_local_zyx.",
+      "direction_lps": "Same axis-direction matrix as the source CT.",
+      "bbox_start_zyx": "Detector bounding-box start in source CT ZYX voxel coordinates.",
+      "bbox_end_zyx": "Detector bounding-box end in source CT ZYX voxel coordinates.",
+      "bbox_local_start_zyx": "Detector bounding-box start in patch-local ZYX coordinates.",
+      "bbox_local_end_zyx": "Detector bounding-box end in patch-local ZYX coordinates.",
+      "bbox_size_vox_zyx": "Bounding-box extent along source CT Z/Y/X axes.",
+      "bbox_size_mm_zyx": "Bounding-box physical extent along source CT Z/Y/X axes, in millimetres.",
+      "nodule_volume_estimate_mm3": "Product of bbox_size_mm_zyx.",
+      "padding_value_hu": "HU used for out-of-volume patch padding, sourced through patch_padding_hu_ref.",
+      "intensity_statistics": "HU statistics for detector-bbox voxels and surrounding native CT context.",
+      "array_path": "Path to float32 patch .npy array.",
+      "triplanar_path": "Path to tri-planar visualization.",
+      "anatomical_location": "Heuristic anatomical localization object copied from the authoritative candidate; uses the same detector center and CT geometry.",
+      "detection_source": "Proposal source: ViTDet3D, the sole nodule detector."
+    },
+    "outputs": {
+      "candidates.json": "Authoritative validated, deduplicated ViTDet3D candidates after lung-inclusion and heart-exclusion gating.",
+      "vitdet_raw_detections.json": "Persisted raw ViTDet3D detections before NMS, fusion, and mask gating for study-level audit counts.",
+      "candidates.csv": "Flat human-readable mirror of candidates.json.",
+      "detector_metadata.json": "Detector, CT-frame, patch-frame, and provenance metadata.",
+      "candidate_filter_report.json": "Counts and rejection reasons for the pre-patch lung/heart acceptance gate.",
+      "candidates_rejected_audit.json": "Candidates outside the validated lung/heart mask and eligible candidates beyond top-50; audit only, never downstream input.",
+      "patches/arrays/patch_000.npy": "Float32 ZYX nodule patch.",
+      "patches/visualizations/patch_000_triplanar.png": "Tri-planar patch visualization.",
+      "patches/patches_manifest.json": "Per-patch geometry, coordinates, provenance, and characterization."
+    },
+    "anatomical_localization": {
+      "enabled": true,
+      "method": "heuristic_from_stage01_masks_and_dicom_lps_geometry",
+      "purpose": "Describe where a ViTDet3D detector proposal lies within the existing Stage 01 lung/air/heart masks.",
+      "not_a_new_detector": true,
+      "inputs": [
+        "center_zyx",
+        "lung_mask.npy",
+        "air_mask.npy",
+        "heart_mask.npy",
+        "spacing_zyx_mm",
+        "origin_mm",
+        "direction_lps"
+      ],
+      "coordinate_rules": {
+        "center_voxel_order": "ZYX",
+        "physical_coordinate_system": "DICOM_LPS",
+        "center_lps_formula": "center_lps_mm = origin_mm + direction_lps @ (center_zyx * spacing_zyx_mm)",
+        "laterality_rule": "DICOM-LPS +X is patient left. Candidate LPS X above the lung centroid X is labeled left; below is right; within the configured tolerance is midline/central."
+      },
+      "primary_labels": [
+        "trachea",
+        "bronchus",
+        "lung_wall",
+        "lung_parenchyma",
+        "mediastinal",
+        "outside_lung"
+      ],
+      "region_labels": [
+        "trachea",
+        "left_bronchus",
+        "right_bronchus",
+        "bronchus",
+        "left_lung_wall",
+        "right_lung_wall",
+        "lung_wall",
+        "left_lung_parenchyma",
+        "right_lung_parenchyma",
+        "lung_parenchyma",
+        "heart_or_great_vessels",
+        "outside_lung_mask"
+      ],
+      "anatomical_location_fields": {
+        "primary": "Primary heuristic compartment/location.",
+        "region": "More specific left/right/airway region label.",
+        "laterality": "left, right, midline, midline_or_central, or unknown.",
+        "compartment": "airway, lung_wall, parenchyma, mediastinum, or outside_lung.",
+        "vertical_region": "superior, middle, inferior, or unknown based on axial lung extent.",
+        "wall_relationship": "Relationship to the Stage 01 lung-mask boundary.",
+        "distance_to_lung_mask_mm": "Local physical distance to the lung-mask boundary.",
+        "airway_type": "trachea, bronchus, or null.",
+        "airway_proximity_mm": "Local physical distance to the retained central airway proxy.",
+        "center_inside_lung_mask": "Whether the rounded detector center lies in lung_mask.npy.",
+        "center_inside_heart_mask": "Whether the rounded detector center lies in heart_mask.npy.",
+        "center_lps_mm": "DICOM-LPS physical coordinate of the detector center.",
+        "method": "Localization method identifier.",
+        "method_version": "Localization heuristic version.",
+        "parameters": "Thresholds used for localization.",
+        "limitations": "Explicit statement that this is heuristic rather than clinical anatomical segmentation."
+      },
+      "default_parameters": {
+        "wall_distance_mm": 5.0,
+        "airway_proximity_mm": 4.0,
+        "midline_tolerance_mm": 5.0,
+        "airway_central_radius_mm": 22.0,
+        "trachea_central_radius_mm": 15.0,
+        "trachea_z_fraction": 0.55,
+        "airway_superior_offset_mm": 10.0,
+        "local_distance_search_margin_mm": 2.0
+      },
+      "output_locations": {
+        "candidates.json": "Each accepted ViTDet3D candidate contains anatomical_location.",
+        "candidates.csv": "Flat anatomical location columns mirror anatomical_location.primary, region, laterality, and compartment.",
+        "patches/patches_manifest.json": "Each extracted patch record contains the same anatomical_location object copied from its authoritative candidate.",
+        "detector_metadata.json": "Contains the anatomical-localization configuration used for the run."
+      },
+      "limitations": "No dedicated anatomical atlas or airway segmentation model is used. Trachea/bronchus labels are inferred from the Stage 01 physical-air mask and central 3-D connectivity; lung-wall labels use local distance to the Stage 01 lung-mask boundary. These labels are for pipeline localization/QA and should not be treated as clinical anatomy."
+    },
+    "coordinate_order": "ZYX",
+    "manifest_schema_version": "02.2",
+    "detector_metadata_schema_version": "02.2",
+    "batch_size_default": 4,
+    "model_version_default": "v1.0",
+    "vit_logit_threshold_default": -5.0,
+    "nms_distance_mm_default": 10.0,
+    "patch_size_vox_default": 64,
+    "context_margin_mm_default": 10.0,
+    "ct_display_window_hu": {
+      "level": -600.0,
+      "width": 1500.0
+    },
+    "default_device": "auto",
+    "output_coordinate_formulas": {
+      "ct_index_to_physical": "p_LPS_mm = origin_lps_mm + direction_lps @ ([z,y,x] * spacing_zyx_mm)",
+      "patch_index_to_physical": "p_LPS_mm = patch_origin_lps_mm + direction_lps @ ([z,y,x] * patch_spacing_zyx_mm)",
+      "crop_bounds_semantics": "[start,end) exclusive in source CT ZYX"
+    },
+    "filenames": {
+      "candidates_json": "candidates.json",
+      "vitdet_raw_detections": "vitdet_raw_detections.json",
+      "candidates_csv": "candidates.csv",
+      "detector_metadata": "detector_metadata.json",
+      "candidate_filter_report": "candidate_filter_report.json",
+      "rejected_candidates_audit": "candidates_rejected_audit.json",
+      "patch_array_pattern": "patch_{patch_id:03d}.npy",
+      "patch_visualization_pattern": "patch_{patch_id:03d}_triplanar.png"
+    },
+    "candidate_acceptance_filter": {
+      "center_rule": "After spatial fusion, validate ZYX/LPS geometry and round center_zyx to nearest voxel; accept only if lung_mask is true and heart_mask is false. Invalid masks or transforms block all downstream processing.",
+      "minimum_bbox_lung_occupancy": 0.0,
+      "require_nonempty_heart_mask": true,
+      "require_human_review_attestation": false,
+      "authoritative_source": "validated_ViTDet3D_candidates",
+      "detector_policy": "ViTDet3D is the sole nodule detector. Its candidates are gated by lung_mask inclusion and heart_mask exclusion before any downstream stage."
+    },
+    "candidate_fusion": {
+      "spatial_match_rule": "Merge when physical center distance <= 3 mm; otherwise merge only when distance <= 8 mm and 3-D box IoU >= 0.25.",
+      "geometry_conflict_rule": "Average within-detector center/box geometry, then average the detector-level geometries with equal-weight detector contributions; no source is authoritative.",
+      "score_rule": "Keep native detector scores separate. Rank candidates within each detector and use the mean of available [0,1] detector rank percentiles for top-50 selection.",
+      "stable_identity_rule": "Derive stable_nodule_id from patient, study, series, and fused physical LPS center using a source-neutral canonical identity namespace.",
+      "eligible_limit": 50
+    },
+    "patch_padding_hu_ref": "stage_01_hu_and_crop.preprocessing.default_blank_value_hu"
+  },
+  "stage_03_nodule_classification": {
+    "stage": "03",
+    "space": "patch_local_ct",
+    "source_stage": "02_detect_and_patch",
+    "schema_version": "3.0-spatial-hybrid",
+    "inputs": {
+      "patch_manifest": "02_detect_and_patch/patches/patches_manifest.json",
+      "patch_arrays": "02_detect_and_patch/patches/arrays/*.npy",
+      "dtype": "float32",
+      "array_axes": [
+        "z",
+        "y",
+        "x"
+      ],
+      "patch_shape_zyx": [
+        64,
+        64,
+        64
+      ],
+      "shape_policy": "fixed_shape_required_no_silent_resize_or_resample"
+    },
+    "model": {
+      "architecture": "frozen spatial-hybrid nodule attribute rankers",
+      "checkpoint_root": "backend/models/nodule_ranker_3d_distributional_v1/spatial_v1/checkpoints/hybrid",
+      "checkpoint_groups": {
+        "subtlety": [
+          "subtlety"
+        ],
+        "sphericity": [
+          "sphericity"
+        ],
+        "margin": [
+          "margin"
+        ],
+        "lobulation_spiculation": [
+          "lobulation",
+          "spiculation"
+        ],
+        "texture": [
+          "texture"
+        ]
+      },
+      "targets_are_expected_ratings": true,
+      "rating_scale": [
+        1,
+        5
+      ],
+      "attention_grid_shape_zyx": [
+        8,
+        8,
+        8
+      ],
+      "attribute_order_ref": "attribute_contracts.stage03_ranked_attributes"
+    },
+    "preprocessing": {
+      "source_units": "HU",
+      "clip_hu": [
+        -1000,
+        400
+      ],
+      "shift_after_clip": 1000,
+      "normalization_mean": 357.87565,
+      "normalization_std": 288.47657,
+      "formula": "(clip(HU, -1000, 400) + 1000 - 357.87565) / 288.47657",
+      "implementation": "model_objective.preprocess_hu"
+    },
+    "attribute_scales": {
+      "subtlety": {
+        "rating_range": [
+          1,
+          5
+        ],
+        "semantics": "expected_ordinal_reader_rating"
+      },
+      "sphericity": {
+        "rating_range": [
+          1,
+          5
+        ],
+        "semantics": "expected_ordinal_reader_rating"
+      },
+      "margin": {
+        "rating_range": [
+          1,
+          5
+        ],
+        "semantics": "expected_ordinal_reader_rating"
+      },
+      "lobulation": {
+        "rating_range": [
+          1,
+          5
+        ],
+        "semantics": "expected_ordinal_reader_rating"
+      },
+      "spiculation": {
+        "rating_range": [
+          1,
+          5
+        ],
+        "semantics": "expected_ordinal_reader_rating"
+      },
+      "texture": {
+        "rating_range": [
+          1,
+          5
+        ],
+        "semantics": "expected_ordinal_reader_rating"
+      }
+    },
+    "prediction_semantics": {
+      "expected_rating": "Expected rating on the LIDC-style 1-to-5 ordinal scale; not a calibrated probability.",
+      "attribute_provenance": "Stage 03 values are frozen-model predictions, not current-patient measured features or annotation-derived reader labels. Model output distributions may describe ordinal uncertainty but are not calibrated confidence.",
+      "malignancy": "Not predicted by Stage 03.",
+      "diagnosis_and_pathology": "Not inferred by Stages 03–06; unavailable unless provided by a separate validated source.",
+      "anatomical_location": "Copied from Stage 02 without modification."
+    },
+    "coordinate_conventions": {
+      "array_order": "ZYX",
+      "coordinate_system": "DICOM_LPS",
+      "patch_origin_definition": "patch_origin_lps_mm is the physical DICOM-LPS [x,y,z] coordinate of the CENTER of saved patch voxel [0,0,0]. It is computed from the source CT origin and crop_start_zyx, so it remains valid even when the requested crop extends outside the native CT and is filled with virtual air padding.",
+      "patch_index_to_physical_formula": "p_LPS_mm = patch_origin_lps_mm + direction_lps @ ([z,y,x] * patch_spacing_zyx_mm)"
+    },
+    "outputs": {
+      "predictions_json": "predictions.json",
+      "predictions_csv": "predictions.csv",
+      "classification_metadata_json": "classification_metadata.json",
+      "attention_directory": "attention/",
+      "attribute_attention": "attention/patch_###_attribute_attention.npy"
+    },
+    "prediction_record_fields": {
+      "patch_id": "Stage 02 patch identifier.",
+      "candidate_id": "Authoritative Stage 02 candidate identifier.",
+      "coordinate_order": "Always ZYX.",
+      "prediction_space": "patch_local_ct.",
+      "center_zyx": "Authoritative Stage 02 detector center in source CT coordinates.",
+      "center_lps_mm": "Same center in DICOM-LPS millimetres.",
+      "patch_origin_lps_mm": "Physical center coordinate of patch voxel [0,0,0].",
+      "spacing_zyx_mm": "Native Stage 02 spacing.",
+      "direction_lps": "Native Stage 01 axis-direction matrix.",
+      "anatomical_location": "Stage 02 heuristic anatomical-location object.",
+      "detector_score": "Stage 02 ViTDet3D score.",
+      "attributes": "Six frozen-model expected ordinal rating predictions, with source, scale, output distribution, and model-derived dispersion/entropy. They are not measured current-patient findings or annotation-derived reader labels; confidence is not calibrated.",
+      "annotation_labels": "Unavailable unless supplied by a separate annotation-ingestion step; not generated from Stage 03 predictions.",
+      "measured_features": "Unavailable; Stage 03 predicts reader-style attributes and does not measure them from patient metadata.",
+      "attention": "Optional Stage 03 attention tensor.",
+      "patch_array_path": "Source patch array used for inference.",
+      "detection_source": "Source lineage for an authoritative ViTDet3D candidate."
+    },
+    "limitations": [
+      "Expected ratings are not calibrated class probabilities.",
+      "Stage 03 emits six attributes only: subtlety, sphericity, margin, lobulation, spiculation and texture.",
+      "Internal structure and calcification are unsupported by the supplied frozen hybrid checkpoints.",
+      "Malignancy is not a Stage 03 output.",
+      "Inference requires checkpoints compatible with the current spatial-hybrid model and preprocessing.",
+      "ViTDet3D candidates enter Stage 03 only through the accepted Stage 02 manifest after lung-inclusion and heart-exclusion gating."
+    ],
+    "unsupported_attributes": [
+      "internal_structure",
+      "calcification",
+      "malignancy"
+    ],
+    "transfer_identity_fields": [
+      "patch_id",
+      "candidate_id",
+      "coordinate_order",
+      "center_zyx",
+      "center_lps_mm",
+      "patch_origin_lps_mm",
+      "spacing_zyx_mm",
+      "direction_lps",
+      "anatomical_location",
+      "detector_score",
+      "intensity_statistics",
+      "patch_center_local_zyx",
+      "detection_source"
+    ]
+  },
+  "paths": {
+    "output_root": "backend/output",
+    "pipeline_run_summary_filename": "pipeline_run_summary.json",
+    "stage_01": {
+      "patient_output": "{output_root}/{patient_id}"
+    },
+    "stage_02": {
+      "directory": "02_detect_and_patch",
+      "patch_directory": "patches"
+    },
+    "stage_03": {
+      "directory": "03_nodule_classification"
+    },
+    "stage_04": {
+      "directory": "04_malignancy_prediction",
+      "output_json": "malignancy_predictions.json"
+    },
+    "stage_05": {
+      "directory": "05_explainability/gradcam_rainbow_final"
+    },
+    "stage_06": {
+      "directory": "06_full_ct_gradcam_rainbow"
+    },
+    "stage_07": {
+      "directory": "07_visualization",
+      "report_json": "nodule_report.json",
+      "report_csv": "nodule_report.csv",
+      "excluded_csv": "excluded_outside_lung.csv"
+    }
+  },
+  "stage_01_hu_and_crop": {
+    "stage": "01",
+    "input_root_from_project_root": "datasets/LIDC/lidc_idri",
+    "preprocessing": {
+      "out_of_scan_pixel_hu_floor": -2000,
+      "air_replacement_hu": -1000,
+      "windows_hu": {
+        "lung": [
+          -600,
+          1500
+        ],
+        "soft_tissue": [
+          40,
+          400
+        ],
+        "bone": [
+          400,
+          1800
+        ]
+      },
+      "air_threshold_hu": -950.0,
+      "lung_threshold_hu": -320.0,
+      "core_relative_size_threshold": 0.12,
+      "max_hole_area_mm2": 2500.0,
+      "z_crop_margin_mm": 10.0,
+      "z_crop_min_area_fraction": 0.008,
+      "default_blank_value_hu": -1000.0,
+      "z_crop_enabled_by_default": true,
+      "min_component_fraction": 0.0008,
+      "closing_radius_mm": 5.0,
+      "wall_margin_mm": 3.0,
+      "heart_mask_min_span_mm": 25.0,
+      "heart_mask_min_component_fraction": 0.25,
+      "pixel_to_hu_formula": "HU = stored_pixel_value * RescaleSlope + RescaleIntercept; map PixelPaddingValue..PixelPaddingRangeLimit and HU below out_of_scan_pixel_hu_floor to air_replacement_hu.",
+      "windowing_formula": "clip(HU, center - width/2, center + width/2); map clipped range linearly to uint8 [0,255].",
+      "heart_tracking": {
+        "method": "hu_guided_expanding_central_rod_with_thoracic_slice_gate",
+        "seed_radius_mm": 2.0,
+        "radius_step_mm": 4.0,
+        "max_radius_mm": 75.0,
+        "soft_tissue_hu_min": -80.0,
+        "soft_tissue_hu_max": 500.0,
+        "min_lung_slice_fraction": 0.12,
+        "min_support_voxels_per_slice": 8,
+        "axial_margin_mm": 10.0,
+        "description": "HU-guided expanding central Z-rod: only voxels in the configured soft-tissue HU interval can seed or grow the mask; slices with insufficient thoracic lung area are excluded so inferior liver/upper-abdominal tissue cannot seed tracking; the tracked mask may overlap the provisional lung mask and Stage 01 subtracts it after tracking. Shape growth is bounded by physical contour motion and an adjacent-slice area ratio. Heuristic central cardiac/mediastinal exclusion requiring visual QC, not clinical heart segmentation.",
+        "compatibility_note": "heart_mask.npy is a bool ZYX heuristic cardiac/mediastinal exclusion mask. Its HU range and thoracic-slice gate constrain actual growth, and it can overlap provisional lung_mask until Stage 01 applies lung_mask &= ~heart_mask. volume_hu_heart_excluded.npy is aligned float32 HU and is not the default Stage 02 detector input. Visual QC remains mandatory.",
+        "exclusion_mask_hu_min": -950.0,
+        "max_contour_growth_mm": 5.0,
+        "max_slice_area_ratio": 1.4
+      }
+    },
+    "coordinate_format_ref": "coordinate_format",
+    "metadata_schema_version": "01.0",
+    "filenames": {
+      "volume_hu.npy": "volume_hu.npy",
+      "volume_hu_cropped.npy": "volume_hu_cropped.npy",
+      "volume_hu_masked.npy": "volume_hu_masked.npy",
+      "volume_windowed.npy": "volume_windowed.npy",
+      "air_mask.npy": "air_mask.npy",
+      "lung_mask.npy": "lung_mask.npy",
+      "heart_mask.npy": "heart_mask.npy",
+      "meta.json": "meta.json",
+      "heart_tracking_diagnostics.json": "heart_tracking_diagnostics.json",
+      "volume_hu_heart_excluded.npy": "volume_hu_heart_excluded.npy",
+      "heart_mask_review_montage_pattern": "heart_mask_review_montage_{page:03d}.png",
+      "heart_mask_review_metrics.json": "heart_mask_review_metrics.json",
+      "heart_mask_review_attestation.json": "heart_mask_review_attestation.json",
+      "mask_quality_report.json": "mask_quality_report.json"
+    },
+    "mask_quality": {
+      "status_values": [
+        "validated_automated",
+        "blocked"
+      ],
+      "validated_automated_requires": [
+        "non-empty lung and heart masks",
+        "zero lung/heart overlap",
+        "aligned CT, masks, window volumes, and crop geometry",
+        "finite orthonormal DICOM-LPS direction matrix",
+        "successful heart-tracker diagnostics"
+      ],
+      "review_policy": "Mask quality is automatically validated. Visual review and hash-bound operator attestation are optional and are not a Stage 02 gate."
+    },
+    "review_qc": {
+      "slices_per_montage": 16,
+      "columns": 4,
+      "overlay_colors": {
+        "lung": "green",
+        "heart_exclusion": "magenta"
+      },
+      "attestation_policy": "Review montages and hash-bound operator attestations may be generated for optional research QA, but are not required for pipeline execution."
+    }
+  },
+  "stage_04_malignancy_prediction": {
+    "stage": "04",
+    "role": "brock_only_research_risk_inference",
+    "model_name": "Brock_PanCan_full",
+    "model_version": "published-coefficients-verified-v1",
+    "enabled_by_default": true,
+    "output_schema_version": "stage04-malignancy-output-v2",
+    "semantics": "Brock/PanCan research malignancy-risk estimate; not a cancer probability, histological classification, or diagnosis.",
+    "input_feature_order": [
+      "age_years",
+      "sex",
+      "family_history_lung_cancer",
+      "emphysema",
+      "nodule_size_mm",
+      "nodule_type",
+      "upper_lobe",
+      "nodule_count",
+      "spiculation"
+    ],
+    "formula_version": "mcwilliams-nejmoa1214726-full-v1",
+    "explanation_semantics": "Analytical Brock formula contributions on the logit scale; not SHAP, causal effects, or percentage-point probability changes.",
+    "input_validation": "Reject unknown predictor fields and unselected stable nodule IDs. Missing or unknown required values produce incomplete status and are never coerced. Approved exceptions: nodule_size_mm is the Stage 02 detector estimate (longest in-plane bbox extent, labelled derived); spiculation is the Stage 03 predicted ordinal rating mapped to binary at expected_rating >= 3.0 (raw rating and mapping retained as provenance; not a reader finding); upper_lobe is derived from Stage 02 vertical_region (superior=1, inferior=0, otherwise incomplete); nodule_type is derived from the Stage 03 predicted texture rating by round-half-up (1=pure_ground_glass, 2-3=part_solid, 4-5=solid; ratings outside 1-5 are incomplete), with the raw rating retained as provenance and calibrated_confidence null; nodule_count is the number of lung-gated Stage 02 candidates for the patient (detector count, not radiologist-confirmed). A manual nodule_type may fill a missing source value, and may override a known value only with a recorded correction reason. Patient fields come from the stored clinical record with explicit manual corrections; conflicts without a reason are rejected.",
+    "diagnosis_and_pathology": "Separate fields explicitly remain not_predicted/not_provided; Brock output is not confirmed diagnosis, pathology, or histological subtype."
+  },
+  "stage_05_gradcam": {
+    "stage": "05",
+    "checkpoint_by_attribute": {
+      "subtlety": "subtlety/best.pth",
+      "sphericity": "sphericity/best.pth",
+      "margin": "margin/best.pth",
+      "lobulation": "lobulation_spiculation/best.pth",
+      "spiculation": "lobulation_spiculation/best.pth",
+      "texture": "texture/best.pth"
+    },
+    "target_layer": "encoder.stage3.1.conv2",
+    "target_scalar_definition": "SpatialObjectiveModel.expected_ratings(outputs)[0, MODEL_TARGET_INDEX[attribute]]; expected LIDC attribute rating on the schema-declared scale.",
+    "raw_cam_formula": "sum_channel(mean_spatial_gradient(d target expected_rating / d target_layer_activation) * target_layer_activation); trilinear interpolation to the input patch; signed values preserved without ReLU.",
+    "gradient_polarity_semantics": "Positive raw values indicate positive gradient-weighted activation with respect to increasing the selected expected-rating scalar; this is a model sensitivity signal, not a causal or voxelwise attribute probability. No attribute-specific inversion is applied.",
+    "patch_shape_zyx": [
+      64,
+      64,
+      64
+    ],
+    "default_alpha": 0.55,
+    "cam_scaling": "per-map min-max to [0,1]",
+    "filenames": {
+      "image_pattern": "gradcam_{attribute}_rainbow.png",
+      "raw_cam_pattern": "gradcam_{attribute}_raw_signed.npy",
+      "scaled_cam_pattern": "gradcam_{attribute}_rainbow_scaled.npy",
+      "metadata_pattern": "gradcam_{attribute}_metadata.json",
+      "acceptance_audit": "stage05_acceptance_audit.json"
+    },
+    "attributes_ref": "attribute_contracts.stage03_ranked_attributes",
+    "palette_ref": "visualization.rainbow_palette",
+    "batch_processing": {
+      "enabled": true,
+      "reuse_loaded_checkpoints": true,
+      "output_layout": "<gradcam_batch_output_directory>/patch_<patch_id:03d>/",
+      "all_manifest_patches_by_default": true,
+      "patch_output_directory_pattern": "patch_{patch_id:03d}"
+    }
+  },
+  "stage_06_full_ct_gradcam": {
+    "stage": "06",
+    "record_filename": "stage06_nodule_records.json",
+    "record_schema_version": "stage06-nodule-record-v1",
+    "record_required_fields": [
+      "nodule_id",
+      "candidate_id",
+      "patch_id",
+      "patient_id",
+      "detection_source",
+      "purpose",
+      "geometry",
+      "detector",
+      "attributes",
+      "malignancy",
+      "model_identity",
+      "uncertainty_and_limitations",
+      "explanations"
+    ],
+    "default_alpha": 0.48,
+    "mapping_rule": "patch voxel [z,y,x] maps to CT voxel [z,y,x] = crop_start_zyx + patch voxel index; invalid/out-of-volume portions are clipped.",
+    "overlap_rule": "mean of available per-patch Rainbow-scaled CAM values",
+    "cam_scaled_filename_patterns": [
+      "gradcam_{attribute}_rainbow_scaled.npy",
+      "gradcam_{attribute}_rainbow_scaled_patch.npy"
+    ],
+    "cam_raw_filename_patterns": [
+      "gradcam_{attribute}_raw_signed.npy",
+      "gradcam_{attribute}.npy"
+    ],
+    "report_filename": "full_ct_gradcam_report.json",
+    "volume_filename_pattern": "gradcam_{attribute}_full_ct_volume.npz",
+    "slice_filename_pattern": "full_ct_gradcam_{attribute}_z{z:04d}.png",
+    "montage_filename_pattern": "full_ct_gradcam_{attribute}_montage.png",
+    "bbox_outline_hex": "#FF00FF",
+    "patch_directory_patterns": [
+      "patch_{patch_id:03d}",
+      "patch_{patch_id}"
+    ],
+    "cam_side_by_side_filename_patterns": [
+      "gradcam_{attribute}_rainbow_scaled_patch_{patch_id:03d}.npy",
+      "gradcam_{attribute}_rainbow_scaled_{patch_id:03d}.npy",
+      "gradcam_{attribute}_raw_signed_patch_{patch_id:03d}.npy"
+    ],
+    "unqualified_cam_policy": "Only patch_id == 0 may use filenames without a patch identifier.",
+    "attributes_ref": "attribute_contracts.stage03_ranked_attributes",
+    "unqualified_patch_id": 0,
+    "palette_ref": "visualization.rainbow_palette",
+    "display_window_ref": "stage_02_detect_and_patch.ct_display_window_hu"
+  },
+  "metadata_policy": {
+    "single_source_of_truth": "meta_schema.json",
+    "schema_version_semantics": "Metadata contract version only; does not identify or mutate trained checkpoint versions.",
+    "supported_schema_versions": [
+      "2.6",
+      "2.7",
+      "2.8",
+      "2.10",
+      "2.11",
+      "2.12",
+      "2.13",
+      "2.14",
+      "2.15"
+    ],
+    "legacy_behavior": "If a Stage 01/02 artifact lacks meta_schema_version, scripts may accept it with an explicit warning; if present and mismatched, fail fast. Stage 07 report outputs are tagged with the schema version and excluded-outside-lung candidates are kept in a separate audit CSV.",
+    "model_artifacts_mutable": false
+  },
+  "attribute_contracts": {
+    "stage03_ranked_attributes": [
+      "subtlety",
+      "sphericity",
+      "margin",
+      "lobulation",
+      "spiculation",
+      "texture"
+    ]
+  },
+  "defaults": {
+    "patient_id": "LIDC-IDRI-0001"
+  },
+  "visualization": {
+    "rainbow_palette": [
+      {
+        "name": "blue",
+        "hex": "#1538D6",
+        "position": 0.0
+      },
+      {
+        "name": "green",
+        "hex": "#00A651",
+        "position": 0.25
+      },
+      {
+        "name": "yellow",
+        "hex": "#FFFF00",
+        "position": 0.5
+      },
+      {
+        "name": "orange",
+        "hex": "#FF9900",
+        "position": 0.75
+      },
+      {
+        "name": "red",
+        "hex": "#D7191C",
+        "position": 1.0
+      }
+    ],
+    "patch_outline_hex": "#FFFF00"
+  },
+  "stage_07_visualize": {
+    "stage": "07",
+    "role": "interactive_ct_slice_viewer_and_in_lung_candidate_report",
+    "inputs": {
+      "ct_volume_ref": "stage_01_hu_and_crop.filenames.volume_hu_cropped.npy",
+      "lung_mask_ref": "stage_01_hu_and_crop.filenames.lung_mask.npy",
+      "air_mask_ref": "stage_01_hu_and_crop.filenames.air_mask.npy",
+      "heart_mask_ref": "stage_01_hu_and_crop.filenames.heart_mask.npy",
+      "primary_predictions_ref": "stage_03_nodule_classification.outputs.predictions_json",
+      "primary_malignancy_ref": "paths.stage_04.output_json"
+    },
+    "outputs": {
+      "report_json_ref": "paths.stage_07.report_json",
+      "report_csv_ref": "paths.stage_07.report_csv",
+      "excluded_outside_lung_csv_ref": "paths.stage_07.excluded_csv",
+      "nodule_visualization_directory": "nodule_visualizations"
+    },
+    "center_in_mask_rule": "Round center_zyx to nearest voxel and sample the Stage 01 lung_mask.npy at that voxel; out-of-volume or false mask samples are excluded from the visible candidate list and accepted CSV.",
+    "anatomical_location_source": "Stage 02 anatomical_location heuristic; when unavailable, derive wall-versus-parenchyma from lung-mask distance transform and report airway category as unclassified.",
+    "display_window_ref": "stage_02_detect_and_patch.ct_display_window_hu",
+    "slider_axis": "axial_z",
+    "source_display_labels": {
+      "ViTDet3D": "V"
+    },
+    "clinical_limitations": [
+      "Candidate counts are spatially deduplicated detector proposals whose rounded centers lie in lung_mask.npy, not adjudicated unique nodules.",
+      "Stage 04 Brock outputs are research/POC malignancy-risk estimates, not cancer probabilities, histological classifications, or diagnoses.",
+      "Bronchus/trachea/wall/parenchyma labels are heuristic, not a dedicated anatomical segmentation or clinical ground truth."
+    ],
+    "report_schema_version": "stage07-nodule-report-v2",
+    "viewer": {
+      "default_open_gui": true,
+      "default_mask_overlays": {
+        "lung_mask": true,
+        "air_mask": false,
+        "heart_mask": false
+      },
+      "slice_label": "axial_z",
+      "viTdet3d_marker": "o",
+      "brock_unavailable_color": "cyan",
+      "brock_available_color": "red"
+    },
+    "csv_columns_order": [
+      "patient_id",
+      "detection_source",
+      "purpose",
+      "stable_nodule_id",
+      "patch_id",
+      "candidate_id",
+      "candidate_in_lung_mask",
+      "center_inside_lung_mask",
+      "center_z_voxel",
+      "center_y_voxel",
+      "center_x_voxel",
+      "center_index_zyx_rounded",
+      "center_lps_x_mm",
+      "center_lps_y_mm",
+      "center_lps_z_mm",
+      "bbox_start_zyx",
+      "bbox_end_zyx_exclusive",
+      "detector_score",
+      "{attribute_columns}",
+      "brock_status",
+      "brock_probability",
+      "brock_failure_reason",
+      "center_inside_air_mask",
+      "center_inside_heart_mask",
+      "location_primary",
+      "location_region",
+      "location_compartment",
+      "laterality",
+      "vertical_region",
+      "wall_relationship",
+      "distance_to_lung_mask_mm",
+      "airway_type",
+      "airway_proximity_mm",
+      "anatomy_location_method",
+      "exclusion_reason",
+      "visualization_path"
+    ],
+    "report_fields": [
+      "schema_version",
+      "meta_schema_version",
+      "stage",
+      "status",
+      "patient_id",
+      "created_from",
+      "ct_volume",
+      "lung_mask",
+      "ct_shape_zyx",
+      "spacing_zyx_mm",
+      "candidate_center_filter",
+      "input_candidate_count",
+      "nodule_count_center_inside_lung_mask",
+      "nodule_count_excluded_from_display",
+      "nodule_count_center_outside_lung_mask",
+      "nodule_count_center_inside_heart_mask",
+      "nodule_count_localization_blocked",
+      "localization_gate",
+      "localization_gate_status",
+      "brock_available_count_inside_lung_mask",
+      "counts_by_source",
+      "accepted_csv",
+      "excluded_outside_lung_csv",
+      "visualization_directory",
+      "visualization_count",
+      "eligible_nodules",
+      "artifact_refs",
+      "warnings",
+      "errors",
+      "provenance",
+      "limitations"
+    ]
+  }
+}
